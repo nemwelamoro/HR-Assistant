@@ -163,7 +163,7 @@ class HRKnowledgeBaseClient:
             logger.error(f"Error processing chunks for article {article_id}: {e}")
             return False
     
-    def search_similar_chunks(self, query: str, limit: int = 5, threshold: float = 0.7) -> List[Dict]:
+    def search_similar_chunks(self, query: str, limit: int = 5, threshold: float = 0.3) -> List[Dict]:  # Changed default from 0.7 to 0.3
         """Search for similar chunks using vector similarity"""
         try:
             # Generate query embedding

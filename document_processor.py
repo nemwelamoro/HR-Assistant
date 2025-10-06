@@ -53,75 +53,98 @@ def clean_text(text: str) -> str:
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
-def chunk_text(text: str, chunk_size: int = 800, overlap: int = 100) -> List[Dict]:
-    """Enhanced chunking with better context preservation"""
+def chunk_text(text: str, chunk_size: int = 600, overlap: int = 150) -> List[Dict]:  # Increased overlap
+    """Enhanced chunking with better context preservation and smaller chunks"""
     if not text:
         return []
     
     try:
         encoding = tiktoken.get_encoding("cl100k_base")
         
-        # Split by paragraphs first, then sentences
-        paragraphs = [p.strip() for p in text.split('\n\n') if p.strip()]
+        # Create smaller, more focused chunks for better search
+        # Split by sections first (look for headers/titles)
+        sections = re.split(r'\n\s*(?=[A-Z][A-Za-z\s]{10,}:|\d+\.\s+[A-Z])', text)
         
         chunks = []
-        current_chunk = ""
-        current_tokens = 0
         
-        for paragraph in paragraphs:
-            # Split paragraph into sentences
-            sentences = re.split(r'(?<=[.!?])\s+', paragraph)
+        for section in sections:
+            if not section.strip():
+                continue
             
-            for sentence in sentences:
-                sentence = sentence.strip()
-                if not sentence:
-                    continue
-                    
-                sentence_tokens = len(encoding.encode(sentence))
+            # Further split long sections by paragraphs
+            paragraphs = [p.strip() for p in section.split('\n\n') if p.strip()]
+            
+            current_chunk = ""
+            current_tokens = 0
+            
+            for paragraph in paragraphs:
+                paragraph_tokens = len(encoding.encode(paragraph))
                 
-                # If adding this sentence would exceed chunk size
-                if current_tokens + sentence_tokens > chunk_size and current_chunk:
-                    # Save current chunk
-                    chunks.append({
-                        "content": current_chunk.strip(),
-                        "token_count": current_tokens,
-                        "chunk_index": len(chunks)
-                    })
-                    
-                    # Start new chunk with overlap
-                    if overlap > 0 and chunks:
-                        # Take last few sentences for overlap
-                        overlap_text = ""
-                        sentences_for_overlap = current_chunk.split('. ')[-2:]
-                        overlap_text = '. '.join(sentences_for_overlap)
-                        if len(encoding.encode(overlap_text)) <= overlap:
-                            current_chunk = overlap_text + ". " + sentence
+                # If paragraph itself is too long, split by sentences
+                if paragraph_tokens > chunk_size * 0.8:
+                    sentences = re.split(r'(?<=[.!?])\s+', paragraph)
+                    for sentence in sentences:
+                        sentence_tokens = len(encoding.encode(sentence))
+                        
+                        if current_tokens + sentence_tokens > chunk_size and current_chunk:
+                            # Save current chunk
+                            chunks.append({
+                                "content": current_chunk.strip(),
+                                "token_count": current_tokens,
+                                "chunk_index": len(chunks)
+                            })
+                            
+                            # Start new chunk with overlap
+                            overlap_sentences = current_chunk.split('. ')[-2:] if overlap > 0 else []
+                            overlap_text = '. '.join(overlap_sentences)
+                            
+                            if len(encoding.encode(overlap_text)) <= overlap:
+                                current_chunk = overlap_text + ". " + sentence if overlap_text else sentence
+                            else:
+                                current_chunk = sentence
+                            
                             current_tokens = len(encoding.encode(current_chunk))
                         else:
-                            current_chunk = sentence
-                            current_tokens = sentence_tokens
-                    else:
-                        current_chunk = sentence
-                        current_tokens = sentence_tokens
+                            current_chunk = (current_chunk + " " + sentence).strip()
+                            current_tokens = len(encoding.encode(current_chunk))
                 else:
-                    # Add sentence to current chunk
-                    if current_chunk:
-                        current_chunk += " " + sentence
+                    # Regular paragraph processing
+                    if current_tokens + paragraph_tokens > chunk_size and current_chunk:
+                        # Save current chunk
+                        chunks.append({
+                            "content": current_chunk.strip(),
+                            "token_count": current_tokens,
+                            "chunk_index": len(chunks)
+                        })
+                        
+                        # Start new chunk with overlap
+                        if overlap > 0:
+                            overlap_words = current_chunk.split()[-overlap//4:]  # Approximate word overlap
+                            overlap_text = ' '.join(overlap_words)
+                            if len(encoding.encode(overlap_text)) <= overlap:
+                                current_chunk = overlap_text + " " + paragraph
+                            else:
+                                current_chunk = paragraph
+                        else:
+                            current_chunk = paragraph
+                        
+                        current_tokens = len(encoding.encode(current_chunk))
                     else:
-                        current_chunk = sentence
-                    current_tokens = len(encoding.encode(current_chunk))
+                        current_chunk = (current_chunk + "\n\n" + paragraph).strip()
+                        current_tokens = len(encoding.encode(current_chunk))
+            
+            # Add final chunk from this section
+            if current_chunk and len(current_chunk.strip()) > 50:
+                chunks.append({
+                    "content": current_chunk.strip(),
+                    "token_count": current_tokens,
+                    "chunk_index": len(chunks)
+                })
         
-        # Add final chunk
-        if current_chunk and len(current_chunk.strip()) > 20:
-            chunks.append({
-                "content": current_chunk.strip(),
-                "token_count": current_tokens,
-                "chunk_index": len(chunks)
-            })
+        # Filter out very short chunks but be less aggressive
+        chunks = [chunk for chunk in chunks if len(chunk["content"].split()) >= 15]  # Reduced from 10
         
-        # Filter out very short chunks
-        chunks = [chunk for chunk in chunks if len(chunk["content"].split()) >= 10]
-        
+        logger.info(f"Created {len(chunks)} chunks with average size {sum(c['token_count'] for c in chunks) / len(chunks):.0f} tokens")
         return chunks
         
     except Exception as e:
